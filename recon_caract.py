@@ -1,7 +1,10 @@
 import os
+import subprocess
 import PyPDF2 as p2
 import pytesseract as pt
 from PIL import Image
+import image_split as ims
+import shutil
 
 def redimA4(img):
     A4_WIDTH, A4_HEIGHT = 2480, 3508
@@ -20,14 +23,34 @@ def redimA4(img):
 
     return background
 
+def decoupe_livre(livre):
+    destination=os.path.join(livre,'LivreDecoupe')
+    if os.path.isdir(destination):
+        shutil.rmtree(destination)
+    os.makedirs(destination)
+    for file in os.listdir(livre):
+        if file.lower().endswith(".jpg"):
+            img=Image.open(os.path.join(livre,file))
+            width,height=img.size
+            img.close()
+            if width>height:
+                print(os.path.join(livre,file))
+                ims.split_book(os.path.join(livre,file),destination,margin=20)
+                
+    return destination
+
+                
+
 def ouverture_pdf(livre):
-    recon_caracteres(livre)
-    mise_en_page(livre)
+    dossier_decoupe = decoupe_livre(livre)
+    recon_caracteres(dossier_decoupe)
+    mise_en_page(dossier_decoupe)
 
 def mise_en_page(livre):
     merger = p2.PdfMerger()
 
     for file in sorted(os.listdir(livre)):
+        print(f"Traitement du fichier : {file}")
         if file.lower().endswith(".pdf") and file != "Livre_numérique.pdf":
             merger.append(os.path.join(livre, file))
 
@@ -55,4 +78,10 @@ def suprimer_fichiers(livre):
     for file in os.listdir(livre):
         if file.lower().endswith(".jpg"):
             os.remove(os.path.join(livre, file))
+            
+mise_en_page(r"C:\Users\claud\Documents\Stage\ImagesPDF\Vente de Bacque\13.04.26\PPPPC\LivreDecoupe")
+subprocess.Popen([os.path.join(r"C:\Users\claud\Documents\Stage\ImagesPDF\Vente de Bacque\13.04.26\PPPPC\LivreDecoupe", "Livre_numérique.pdf")], shell=True)
+
+            
+    
         
