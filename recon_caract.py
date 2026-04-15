@@ -5,6 +5,7 @@ import pytesseract as pt
 from PIL import Image
 import image_split as ims
 import shutil
+from multiprocessing import Pool, cpu_count
 
 def redimA4(img):
     A4_WIDTH, A4_HEIGHT = 2480, 3508
@@ -58,29 +59,39 @@ def mise_en_page(livre):
     merger.close()
 
 
+def traiter_image(args):
+    livre, file = args
+    if not file.lower().endswith(".jpg"):
+        return
+    
+    image_path = os.path.join(livre, file)
+    
+    try:
+        img = Image.open(image_path)
+    except:
+        print(f"Fichier ignoré: {file}")
+        return
+
+    #img = redimA4(img)
+    pdf_path = os.path.join(livre, file.replace(".jpg", ".pdf"))
+    
+    pdf = pt.image_to_pdf_or_hocr(img, extension='pdf', config='--oem 1 --psm 6')
+    
+    with open(pdf_path, 'wb') as f:
+        f.write(pdf)
+
 def recon_caracteres(livre):
-    for file in os.listdir(livre):
-        if not file.lower().endswith(".jpg"):
-            continue
-        image_path = os.path.join(livre, file)
-        try:
-            img = Image.open(image_path)
-        except:
-            print(f"Fichier ignoré: {file}")
-            continue
-        img=redimA4(img)
-        pdf_path = os.path.join(livre, file.replace(".jpg", ".pdf"))
-        pdf = pt.image_to_pdf_or_hocr(img, extension='pdf')
-        with open(pdf_path, 'wb') as f:
-            f.write(pdf)
+    files = os.listdir(livre)
+    args = [(livre, file) for file in files]
+
+    with Pool(cpu_count()) as p:
+        p.map(traiter_image, args)
             
 def suprimer_fichiers(livre):
     for file in os.listdir(livre):
         if file.lower().endswith(".jpg"):
             os.remove(os.path.join(livre, file))
             
-mise_en_page(r"C:\Users\claud\Documents\Stage\ImagesPDF\Vente de Bacque\13.04.26\PPPPC\LivreDecoupe")
-subprocess.Popen([os.path.join(r"C:\Users\claud\Documents\Stage\ImagesPDF\Vente de Bacque\13.04.26\PPPPC\LivreDecoupe", "Livre_numérique.pdf")], shell=True)
 
             
     
