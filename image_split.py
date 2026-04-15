@@ -79,7 +79,7 @@ def _apply_global_margins(width, height, horiz_percent=0.08, vert_percent=0.04):
     return x_start, x_end, y_start, y_end
 
 
-def _get_text_boundaries_x(binary, col_threshold=0.03):
+def _get_text_boundaries_x(binary, col_threshold=0.002):
     """
     Détecte la première et la dernière colonne contenant du texte.
     """
@@ -169,33 +169,23 @@ def _find_gutter_robust(gray, search_lo_frac=0.25, search_hi_frac=0.75):
                                    cv2.THRESH_BINARY_INV, 51, 15)
     kernel = np.ones((4, 4), np.uint8)
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
-    text_ratio = binary.mean() / 255  # proportion globale de pixels de texte
-
     col_density = binary.sum(axis=0).astype(np.float32) / (255 * h)
     window = max(5, int(w * 0.02))
     col_density_smooth = np.convolve(col_density, np.ones(window) / window, mode='same')
     zone_d = col_density_smooth[lo:hi]
-    if zone_d.max() > zone_d.min():
-        # Inverser : minimum de densité → score élevé (gouttière = creux de texte)
-        zone_d_norm = 1.0 - (zone_d - zone_d.min()) / (zone_d.max() - zone_d.min())
-    else:
-        zone_d_norm = np.zeros_like(zone_d)
 
-    # ── Pondération adaptative selon la quantité de texte détectée
-    #    alpha_text ∈ [0, 1] : 0 = page vide/sparse, 1 = page dense
-    TEXT_RATIO_SPARSE = 0.02   # en dessous : quasi pas de texte
-    TEXT_RATIO_DENSE  = 0.08   # au-dessus  : texte bien présent
-    alpha_text = float(np.clip(
-        (text_ratio - TEXT_RATIO_SPARSE) / (TEXT_RATIO_DENSE - TEXT_RATIO_SPARSE),
-        0.0, 1.0
-    ))
-    alpha_visual = 1.0 - alpha_text
+    # ── Nouvel algorithme de score : Exclure fermement le texte
+    # Centralité (prioriser le centre de l'image pour départager)
+    x_indices = np.arange(lo, hi)
+    center_x = w / 2.0
+    sigma_center = w * 0.15
+    zone_c = np.exp(-0.5 * ((x_indices - center_x) / sigma_center) ** 2)
 
-    w_sobel = 0.65 * alpha_visual + 0.05 * alpha_text
-    w_lum   = 0.30 * alpha_visual + 0.10 * alpha_text
-    w_dens  = 0.05 * alpha_visual + 0.85 * alpha_text
+    # Répression du texte : s'effondre très vite si la densité de texte dépasse le minimum local.
+    # Garantit que la gouttière est cherchée UNIQUEMENT dans l'espace sans texte.
+    text_suppression = np.exp(-(zone_d - zone_d.min()) * 150.0)
 
-    score = w_sobel * zone_s_norm + w_lum * zone_b_norm + w_dens * zone_d_norm
+    score = (0.4 * zone_s_norm + 0.4 * zone_b_norm + 0.2 * zone_c) * text_suppression
 
     gutter_local = int(np.argmax(score))
     gutter_abs = lo + gutter_local
@@ -227,7 +217,7 @@ def normal_split(image_path, dest_path, margin=50,
     # ── Bornes du texte (pour cadrer la découpe finale)
     binary_central = binary[y_start:y_end, x_start:x_end]
     try:
-        x_min_rel, x_max_rel = _get_text_boundaries_x(binary_central, col_threshold=0.025)
+        x_min_rel, x_max_rel = _get_text_boundaries_x(binary_central, col_threshold=0.002)
         x_min_abs = x_start + x_min_rel
         x_max_abs = x_start + x_max_rel
     except ValueError:
@@ -280,31 +270,29 @@ def image_with_blank_split(image_path, dest_path, ref_text_width, margin=50,
         img_w, img_h, horiz_margin_percent, vert_margin_percent
     )
     binary_central = binary[y_start:y_end, x_start:x_end]
+    gutter_x = _find_gutter_robust(gray, search_lo_frac=0.25, search_hi_frac=0.75)
 
     try:
-        x_min_rel, x_max_rel = _get_text_boundaries_x(binary_central, col_threshold=0.025)
+        x_min_rel, x_max_rel = _get_text_boundaries_x(binary_central, col_threshold=0.002)
         x_min_abs = x_start + x_min_rel
         x_max_abs = x_start + x_max_rel
         text_center = (x_min_abs + x_max_abs) // 2
     except ValueError:
         # Aucun texte détecté : utiliser la gouttière robuste pour deviner le côté
-        gutter_x = _find_gutter_robust(gray)
-        # Choisir arbitrairement la page gauche (ou droite si gutter très à gauche)
         text_center = img_w // 4  # on suppose page gauche par défaut
         x_min_abs = x_start
         x_max_abs = gutter_x
 
-    image_center = img_w // 2
     margin_v = int(0.05 * img_h)
     y_start2 = margin_v
     y_end2   = img_h - margin_v
 
-    if text_center < image_center:
+    if text_center < gutter_x:
         left  = max(0, x_min_abs - margin)
-        right = min(img_w, left + ref_text_width)
+        right = min(img_w, gutter_x + margin)
     else:
         right = min(img_w, x_max_abs + margin)
-        left  = max(0, right - ref_text_width)
+        left  = max(0, gutter_x - margin)
 
     single_img = bgr[y_start2:y_end2, left:right]
     base_name  = os.path.splitext(os.path.basename(image_path))[0]
@@ -323,15 +311,30 @@ def partial_split(image_path, dest_path, ref_text_width, margin=50,
     bgr, gray = _load_image(image_path)
     img_h, img_w = gray.shape
 
+    binary_raw = _binarize(gray)
+    binary = _fast_denoise(binary_raw)
+
+    x_start, x_end, y_start, y_end = _apply_global_margins(
+        img_w, img_h, horiz_margin_percent, vert_margin_percent
+    )
+    binary_central = binary[y_start:y_end, x_start:x_end]
+    try:
+        x_min_rel, x_max_rel = _get_text_boundaries_x(binary_central, col_threshold=0.002)
+        x_min_abs = x_start + x_min_rel
+        x_max_abs = x_start + x_max_rel
+    except ValueError:
+        x_min_abs = x_start
+        x_max_abs = x_end
+
     # ── Gouttière robuste (pivot)
     gutter_x = _find_gutter_robust(gray, search_lo_frac=0.25, search_hi_frac=0.75)
 
     page_target_w = ref_text_width // 2
 
-    l_left  = max(0, gutter_x - page_target_w)
-    l_right = gutter_x
-    r_left  = gutter_x
-    r_right = min(img_w, gutter_x + page_target_w)
+    l_left  = max(0, min(gutter_x - page_target_w, x_min_abs - margin))
+    l_right = min(img_w, gutter_x + margin)
+    r_left  = max(0, gutter_x - margin)
+    r_right = min(img_w, max(gutter_x + page_target_w, x_max_abs + margin))
 
     margin_v = int(vert_margin_percent * img_h)
     y_top    = margin_v
@@ -427,7 +430,7 @@ def measure_text_width_with_margin(image_path,
     )
     binary_central = binary[y_start:y_end, x_start:x_end]
     try:
-        x_min_rel, x_max_rel = _get_text_boundaries_x(binary_central, col_threshold=0.025)
+        x_min_rel, x_max_rel = _get_text_boundaries_x(binary_central, col_threshold=0.002)
         text_width = (x_max_rel - x_min_rel) * 0.8
         return text_width
     except ValueError:
