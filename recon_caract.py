@@ -24,26 +24,52 @@ def redimA4(img):
 
     return background
 
-def decoupe_livre(livre):
+def decoupe_livre(livre, ref_width = None):
     destination=os.path.join(livre,'LivreDecoupe')
     if os.path.isdir(destination):
         shutil.rmtree(destination)
     os.makedirs(destination)
+
+    cover_width = None
+    cover_path = None
+    for file in os.listdir(livre):
+        if file.lower().endswith(".jpg") and ('001' in file or '0001' in file):
+            img = Image.open(os.path.join(livre, file))
+            cover_width = img.width
+            cover_path = os.path.join(livre, file)
+            img.close()
+            break
+
+    if cover_width is None:
+        print("⚠️ Aucune couverture trouvée (fichier avec 001 ou 0001). Utilisation de tous les fichiers sans split.")
+        raise ValueError ("fichier de couverture introuvable")
+    
+    if ref_width is None:
+        print("Aucune taille de réference de texte trouvée")
+        raise ValueError ("fichier de couverture introuvable")
+
+
     for file in os.listdir(livre):
         if file.lower().endswith(".jpg"):
+            print(file)
             img=Image.open(os.path.join(livre,file))
             width,height=img.size
             img.close()
             if width>height:
-                print(os.path.join(livre,file))
-                ims.split_book(os.path.join(livre,file),destination,margin=20)
+                ims.split_book(os.path.join(livre,file),destination,20,cover_width, ref_width)
+            else :
+                ims.save_image(os.path.join(livre,file),destination)
                 
     return destination
 
                 
 
-def ouverture_pdf(livre):
-    dossier_decoupe = decoupe_livre(livre)
+def ouverture_pdf(livre, ref_width):    
+    try:
+        dossier_decoupe = decoupe_livre(livre, ref_width)
+    except ValueError as e:
+        print("fichier de couverture introuvable")
+        
     recon_caracteres(dossier_decoupe)
     mise_en_page(dossier_decoupe)
 
